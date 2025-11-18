@@ -44,19 +44,12 @@ QTTRANSLATIONSDIR=`brew --prefix $QTVER`/translations
 # Path to boost libraries.
 BOOSTLIBDIR=`brew --prefix boost`/lib
 
-# Detect Python 3 version dynamically
-PYVER=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
-if [ -z "$PYVER" ]; then
-	echo "ERROR: Could not detect Python 3 version"
-	exit 1
-fi
-echo "Auto-detected Python version: $PYVER"
-
-# Detect Python 3 Homebrew formula
+# Detect Python 3 Homebrew formula first
 PYTHON_FORMULA=$(brew list --formula 2>/dev/null | grep -E '^python@3\.[0-9]+$' | head -1)
 if [ -z "$PYTHON_FORMULA" ]; then
 	PYTHON_FORMULA="python3"
 fi
+echo "Using Homebrew Python formula: $PYTHON_FORMULA"
 
 # Path to Python 3 framework - try multiple locations
 PYTHON_PREFIX=`brew --prefix $PYTHON_FORMULA 2>/dev/null`
@@ -70,6 +63,20 @@ else
 	echo "Tried: /Library/Frameworks/Python.framework"
 	exit 1
 fi
+
+# Detect actual Python version from the framework directory
+if [ -d "$PYTHONFRAMEWORKDIR/Versions" ]; then
+	PYVER=$(ls -1 "$PYTHONFRAMEWORKDIR/Versions" | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1)
+fi
+if [ -z "$PYVER" ]; then
+	# Fallback: detect from python3 command
+	PYVER=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+fi
+if [ -z "$PYVER" ]; then
+	echo "ERROR: Could not detect Python 3 version"
+	exit 1
+fi
+echo "Using Python framework version: $PYVER"
 
 # You usually don't need to change anything below this line.
 
