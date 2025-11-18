@@ -42,7 +42,7 @@ QTBINDIR=`brew list $QTVER | grep bin | head -n 1 | xargs dirname`
 QTTRANSLATIONSDIR=`brew --prefix $QTVER`/translations
 
 # Path to boost libraries.
-BOOSTLIBDIR=`brew list boost | grep libboost_system | grep -v cmake | head -n 1 | xargs dirname`
+BOOSTLIBDIR=`brew --prefix boost`/lib
 
 # Path to Python 3 framework.
 PYTHONFRAMEWORKDIR=`brew list python@3.12 | grep libpython | head -n 1 | xargs dirname`/../../../..
@@ -77,14 +77,20 @@ cp -R $PREFIX/share/sigrok-firmware $SHARE_DIR
 
 if [ "x$APPNAME_BINARY" = "xpulseview" ]; then
 	# Manually copy some boost libs that "macdeployqt" won't copy.
-	cp $BOOSTLIBDIR/libboost_timer-mt.dylib $FRAMEWORKSDIR
-	cp $BOOSTLIBDIR/libboost_chrono-mt.dylib $FRAMEWORKSDIR
+	# Try with -mt suffix first (older Homebrew), then without (newer Homebrew)
+	if [ -f $BOOSTLIBDIR/libboost_timer-mt.dylib ]; then
+		cp $BOOSTLIBDIR/libboost_timer-mt.dylib $FRAMEWORKSDIR
+		cp $BOOSTLIBDIR/libboost_chrono-mt.dylib $FRAMEWORKSDIR
+	else
+		cp $BOOSTLIBDIR/libboost_timer.dylib $FRAMEWORKSDIR
+		cp $BOOSTLIBDIR/libboost_chrono.dylib $FRAMEWORKSDIR
+	fi
 	chmod 644 $FRAMEWORKSDIR/*boost*
 
 	# Manually copy translations ("macdeployqt" won't copy them).
 	mkdir -p $CONTENTSDIR/translations
-	cp $QTTRANSLATIONSDIR/qt_*.qm $CONTENTSDIR/translations
-	cp $QTTRANSLATIONSDIR/qtbase_*.qm $CONTENTSDIR/translations
+	cp $QTTRANSLATIONSDIR/qt_*.qm $CONTENTSDIR/translations 2>/dev/null || true
+	cp $QTTRANSLATIONSDIR/qtbase_*.qm $CONTENTSDIR/translations 2>/dev/null || true
 fi
 
 $QTBINDIR/macdeployqt $APPNAME.app
