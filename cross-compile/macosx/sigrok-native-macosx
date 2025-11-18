@@ -26,8 +26,16 @@ PREFIX=$HOME/sr_macosx
 # The path where to download files to and where to build packages.
 BUILDDIR=./build
 
+# Detect Python 3 version dynamically
+PYTHON3_VERSION=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+if [ -z "$PYTHON3_VERSION" ]; then
+	echo "ERROR: Could not detect Python 3 version"
+	exit 1
+fi
+echo "Detected Python version: $PYTHON3_VERSION"
+
 # The path where the libsigrok Python bindings will be installed.
-PYPATH=$PREFIX/lib/python3.12/site-packages
+PYPATH=$PREFIX/lib/python${PYTHON3_VERSION}/site-packages
 
 # Edit this to control verbose build output.
 # V="V=1 VERBOSE=1"
@@ -70,7 +78,14 @@ export PATH="$(brew --prefix $QTVER)/bin:$PATH"
 # PKG_CONFIG_PATH will need to point to pkg-config files of Homebrew's
 # keg-only formulae.
 P="$PREFIX/lib/pkgconfig"
-for FORMULA in libffi python@3.12 "$QTVER"; do
+# Detect Python 3 Homebrew formula (python@3.x)
+PYTHON_FORMULA=$(brew list --formula 2>/dev/null | grep -E '^python@3\.[0-9]+$' | head -1)
+if [ -z "$PYTHON_FORMULA" ]; then
+	# Fallback to generic python3
+	PYTHON_FORMULA="python3"
+fi
+echo "Using Homebrew Python formula: $PYTHON_FORMULA"
+for FORMULA in libffi "$PYTHON_FORMULA" "$QTVER"; do
     P="$P:$(brew --prefix "$FORMULA")/lib/pkgconfig"
 done
 

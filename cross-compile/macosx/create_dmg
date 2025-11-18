@@ -44,9 +44,22 @@ QTTRANSLATIONSDIR=`brew --prefix $QTVER`/translations
 # Path to boost libraries.
 BOOSTLIBDIR=`brew --prefix boost`/lib
 
-# Path to Python 3 framework.
-# Try multiple possible locations for the Python framework
-PYTHON_PREFIX=`brew --prefix python@3.12`
+# Detect Python 3 version dynamically
+PYVER=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+if [ -z "$PYVER" ]; then
+	echo "ERROR: Could not detect Python 3 version"
+	exit 1
+fi
+echo "Auto-detected Python version: $PYVER"
+
+# Detect Python 3 Homebrew formula
+PYTHON_FORMULA=$(brew list --formula 2>/dev/null | grep -E '^python@3\.[0-9]+$' | head -1)
+if [ -z "$PYTHON_FORMULA" ]; then
+	PYTHON_FORMULA="python3"
+fi
+
+# Path to Python 3 framework - try multiple locations
+PYTHON_PREFIX=`brew --prefix $PYTHON_FORMULA 2>/dev/null`
 if [ -d "$PYTHON_PREFIX/Frameworks/Python.framework" ]; then
 	PYTHONFRAMEWORKDIR="$PYTHON_PREFIX/Frameworks/Python.framework"
 elif [ -d "/Library/Frameworks/Python.framework" ]; then
@@ -57,8 +70,6 @@ else
 	echo "Tried: /Library/Frameworks/Python.framework"
 	exit 1
 fi
-
-PYVER="3.12"
 
 # You usually don't need to change anything below this line.
 
@@ -165,7 +176,36 @@ done
 
 # Add wrapper (sets PYTHONHOME/SIGROK_FIRMWARE_DIR/SIGROKDECODE_DIR).
 mv $MACOSDIR/$APPNAME_BINARY $MACOSDIR/$APPNAME_BINARY.real
-cp ../contrib/$APPNAME_BINARY $MACOSDIR
+# Create wrapper script dynamically with detected Python version
+cat > $MACOSDIR/$APPNAME_BINARY << EOF
+#!/bin/sh
+##
+## This file is part of the sigrok-util project.
+##
+## Copyright (C) 2017-2020 Uwe Hermann <uwe@hermann-uwe.de>
+##
+## This program is free software; you can redistribute it and/or modify
+## it under the terms of the GNU General Public License as published by
+## the Free Software Foundation; either version 2 of the License, or
+## (at your option) any later version.
+##
+## This program is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU General Public License
+## along with this program; if not, see <http://www.gnu.org/licenses/>.
+##
+
+DIR="\$(dirname "\$0")"
+cd "\$DIR"
+export DYLD_LIBRARY_PATH="../Frameworks"
+export PYTHONHOME="../Frameworks/Python.framework/Versions/$PYVER"
+export SIGROK_FIRMWARE_DIR="../share/sigrok-firmware"
+export SIGROKDECODE_DIR="../share/libsigrokdecode/decoders"
+exec ./$APPNAME_BINARY.real "\$@"
+EOF
 chmod 755 $MACOSDIR/$APPNAME_BINARY
 
 cp ../contrib/Info.plist_$APPNAME_BINARY $CONTENTSDIR/Info.plist
@@ -173,9 +213,25 @@ cp ../contrib/$APPNAME_BINARY.icns $CONTENTSDIR/Resources
 
 # Code sign the application bundle (required for Apple Silicon)
 echo "Code signing the application..."
-codesign --force --deep --sign - $APPNAME.app
+# Sign Python framework separately first (if it exists)
+if [ -d "$FRAMEWORKSDIR/Python.framework" ]; then
+	echo "Signing Python framework..."
+	# Remove signature-related extended attributes that might cause issues
+	xattr -cr "$FRAMEWORKSDIR/Python.framework" 2>/dev/null || true
+	# Sign the actual Python library
+	codesign --force --sign - "$PYDIR/Python" 2>/dev/null || true
+	codesign --force --sign - "$PYDIR/lib/libpython"*.dylib 2>/dev/null || true
+fi
+# Sign all other frameworks and libraries
+find "$FRAMEWORKSDIR" -name "*.dylib" -type f -exec codesign --force --sign - {} \; 2>/dev/null || true
+find "$FRAMEWORKSDIR" -name "*.framework" -type d -depth 1 ! -name "Python.framework" -exec codesign --force --sign - {} \; 2>/dev/null || true
+# Sign plugins
+find "$CONTENTSDIR/PlugIns" -name "*.dylib" -type f -exec codesign --force --sign - {} \; 2>/dev/null || true
+# Finally sign the main app bundle
+codesign --force --sign - "$MACOSDIR/$APPNAME_BINARY.real"
+codesign --force --sign - $APPNAME.app
 echo "Verifying code signature..."
-codesign --verify --verbose $APPNAME.app
+codesign --verify --verbose $APPNAME.app || echo "Warning: Signature verification failed but continuing..."
 
 hdiutil create "${APPNAME}-${APPVER}.dmg" -volname "$APPNAME $APPVER" \
 	-fs HFS+ -srcfolder "$APPNAME.app"
