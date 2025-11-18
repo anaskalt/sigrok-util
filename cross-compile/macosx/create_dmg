@@ -45,7 +45,7 @@ QTTRANSLATIONSDIR=`brew --prefix $QTVER`/translations
 BOOSTLIBDIR=`brew --prefix boost`/lib
 
 # Path to Python 3 framework.
-PYTHONFRAMEWORKDIR=`brew list python@3.12 | grep libpython | head -n 1 | xargs dirname`/../../../..
+PYTHONFRAMEWORKDIR=`brew --prefix python@3.12`/Frameworks/Python.framework
 
 PYVER="3.12"
 
@@ -93,7 +93,9 @@ if [ "x$APPNAME_BINARY" = "xpulseview" ]; then
 	cp $QTTRANSLATIONSDIR/qtbase_*.qm $CONTENTSDIR/translations 2>/dev/null || true
 fi
 
-$QTBINDIR/macdeployqt $APPNAME.app
+# Set library path for macdeployqt to find Qt frameworks
+QTLIBDIR=`brew --prefix $QTVER`/lib
+$QTBINDIR/macdeployqt $APPNAME.app -libpath=$QTLIBDIR
 
 # Copy Python framework and fix it up.
 cp -R $PYTHONFRAMEWORKDIR $FRAMEWORKSDIR
