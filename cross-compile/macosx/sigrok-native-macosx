@@ -27,7 +27,7 @@ PREFIX=$HOME/sr_macosx
 BUILDDIR=./build
 
 # The path where the libsigrok Python bindings will be installed.
-PYPATH=$PREFIX/lib/python2.7/site-packages
+PYPATH=$PREFIX/lib/python3.12/site-packages
 
 # Edit this to control verbose build output.
 # V="V=1 VERBOSE=1"
@@ -44,8 +44,21 @@ PARALLEL="-j "`sysctl -n hw.ncpu`
 export CC=gcc
 export CXX=g++
 
-# We use Qt 5.5 in order to remain compatible with more versions of Mac OS X.
-QTVER=qt@5.5
+# Detect architecture for Apple Silicon support
+ARCH=$(uname -m)
+if [ "$ARCH" = "arm64" ]; then
+	# Native Apple Silicon build
+	CMAKE_OSX_ARCH="arm64"
+else
+	# Intel build (can also build universal binaries if needed)
+	CMAKE_OSX_ARCH="x86_64"
+fi
+
+# Uncomment the following line to build universal binaries (both Intel and Apple Silicon)
+# CMAKE_OSX_ARCH="arm64;x86_64"
+
+# We use Qt 6 for Apple Silicon compatibility and modern macOS support.
+QTVER=qt@6
 
 # Path to Qt5 binaries (needed for cmake to find the Qt5 libs).
 export PATH="$(brew --prefix $QTVER)/bin:$PATH"
@@ -57,7 +70,7 @@ export PATH="$(brew --prefix $QTVER)/bin:$PATH"
 # PKG_CONFIG_PATH will need to point to pkg-config files of Homebrew's
 # keg-only formulae.
 P="$PREFIX/lib/pkgconfig"
-for FORMULA in libffi python@2 python@3 "$QTVER"; do
+for FORMULA in libffi python@3.12 "$QTVER"; do
     P="$P:$(brew --prefix "$FORMULA")/lib/pkgconfig"
 done
 
@@ -150,7 +163,7 @@ $GIT_CLONE $REPO_BASE/pulseview
 cd pulseview
 mkdir build
 cd build
-PKG_CONFIG_PATH=$P $SB cmake -DCMAKE_INSTALL_PREFIX:PATH=$PREFIX -DDISABLE_WERROR=y -DENABLE_TESTS=y ..
+PKG_CONFIG_PATH=$P $SB cmake -DCMAKE_INSTALL_PREFIX:PATH=$PREFIX -DCMAKE_OSX_ARCHITECTURES="$CMAKE_OSX_ARCH" -DDISABLE_WERROR=y -DENABLE_TESTS=y ..
 $SB make $PARALLEL $V
 make install $V
 $SB make test $V
