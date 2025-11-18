@@ -139,14 +139,29 @@ rm -rf $PYDIR/lib/python$PYVER/__pycache__
 rm -rf $PYDIR/lib/python$PYVER/**/__pycache__
 rm -rf $PYDIR/lib/python$PYVER/**/**/__pycache__
 rm -rf $PYDIR/Resources
-install_name_tool -change \
-	/usr/local/opt/python/Frameworks/Python.framework/Versions/$PYVER/Python \
-	@executable_path/../Frameworks/Python.framework/Versions/$PYVER/Python \
-	$FRAMEWORKSDIR/libsigrokdecode.*.dylib
-install_name_tool -change \
-	/usr/local/opt/python/Frameworks/Python.framework/Versions/$PYVER/Python \
-	@executable_path/../Frameworks/Python.framework/Versions/$PYVER/Python \
-	$PREFIX/lib/libirmp.*.dylib
+
+# Fix Python framework references in libraries
+# Detect the actual Python framework path used during build
+PYTHON_FRAMEWORK_BUILD_PATH="$PYTHON_PREFIX/Frameworks/Python.framework/Versions/$PYVER/Python"
+if [ ! -f "$PYTHON_FRAMEWORK_BUILD_PATH" ]; then
+	# Try alternate location
+	PYTHON_FRAMEWORK_BUILD_PATH="/Library/Frameworks/Python.framework/Versions/$PYVER/Python"
+fi
+
+echo "Fixing Python framework references..."
+for lib in $FRAMEWORKSDIR/libsigrokdecode.*.dylib $PREFIX/lib/libirmp.*.dylib; do
+	if [ -f "$lib" ]; then
+		install_name_tool -change \
+			"$PYTHON_FRAMEWORK_BUILD_PATH" \
+			@executable_path/../Frameworks/Python.framework/Versions/$PYVER/Python \
+			"$lib" 2>/dev/null || true
+		# Also try the old hardcoded path for compatibility
+		install_name_tool -change \
+			/usr/local/opt/python/Frameworks/Python.framework/Versions/$PYVER/Python \
+			@executable_path/../Frameworks/Python.framework/Versions/$PYVER/Python \
+			"$lib" 2>/dev/null || true
+	fi
+done
 
 # Add wrapper (sets PYTHONHOME/SIGROK_FIRMWARE_DIR/SIGROKDECODE_DIR).
 mv $MACOSDIR/$APPNAME_BINARY $MACOSDIR/$APPNAME_BINARY.real
@@ -155,6 +170,12 @@ chmod 755 $MACOSDIR/$APPNAME_BINARY
 
 cp ../contrib/Info.plist_$APPNAME_BINARY $CONTENTSDIR/Info.plist
 cp ../contrib/$APPNAME_BINARY.icns $CONTENTSDIR/Resources
+
+# Code sign the application bundle (required for Apple Silicon)
+echo "Code signing the application..."
+codesign --force --deep --sign - $APPNAME.app
+echo "Verifying code signature..."
+codesign --verify --verbose $APPNAME.app
 
 hdiutil create "${APPNAME}-${APPVER}.dmg" -volname "$APPNAME $APPVER" \
 	-fs HFS+ -srcfolder "$APPNAME.app"
