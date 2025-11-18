@@ -45,13 +45,33 @@ QTTRANSLATIONSDIR=`brew --prefix $QTVER`/translations
 BOOSTLIBDIR=`brew --prefix boost`/lib
 
 # Path to Python 3 framework.
-PYTHONFRAMEWORKDIR=`brew --prefix python@3.12`/Frameworks/Python.framework
+# Try multiple possible locations for the Python framework
+PYTHON_PREFIX=`brew --prefix python@3.12`
+if [ -d "$PYTHON_PREFIX/Frameworks/Python.framework" ]; then
+	PYTHONFRAMEWORKDIR="$PYTHON_PREFIX/Frameworks/Python.framework"
+elif [ -d "/Library/Frameworks/Python.framework" ]; then
+	PYTHONFRAMEWORKDIR="/Library/Frameworks/Python.framework"
+else
+	echo "ERROR: Could not find Python.framework"
+	echo "Tried: $PYTHON_PREFIX/Frameworks/Python.framework"
+	echo "Tried: /Library/Frameworks/Python.framework"
+	exit 1
+fi
 
 PYVER="3.12"
 
 # You usually don't need to change anything below this line.
 
 # -----------------------------------------------------------------------------
+
+echo "=== DMG Build Configuration ==="
+echo "Qt version: $QTVER"
+echo "Qt bin dir: $QTBINDIR"
+echo "Python version: $PYVER"
+echo "Python framework: $PYTHONFRAMEWORKDIR"
+echo "Boost lib dir: $BOOSTLIBDIR"
+echo "==============================="
+echo ""
 
 # Remove build directory contents (if any) and create a new build dir.
 rm -rf $BUILDDIR
@@ -95,7 +115,9 @@ fi
 
 # Set library path for macdeployqt to find Qt frameworks
 QTLIBDIR=`brew --prefix $QTVER`/lib
-$QTBINDIR/macdeployqt $APPNAME.app -libpath=$QTLIBDIR
+echo "Qt lib dir: $QTLIBDIR"
+echo "Running macdeployqt..."
+$QTBINDIR/macdeployqt $APPNAME.app -verbose=2 -libpath="$QTLIBDIR"
 
 # Copy Python framework and fix it up.
 cp -R $PYTHONFRAMEWORKDIR $FRAMEWORKSDIR
