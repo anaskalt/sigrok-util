@@ -137,6 +137,18 @@ echo "Qt lib dir: $QTLIBDIR"
 echo "Running macdeployqt..."
 $QTBINDIR/macdeployqt $APPNAME.app -verbose=2 -libpath="$QTLIBDIR"
 
+# Copy missing Qt frameworks that macdeployqt doesn't automatically include
+echo "Copying additional Qt frameworks..."
+for qtframework in QtDBus; do
+	FWPATH="$QTLIBDIR/$qtframework.framework"
+	if [ -d "$FWPATH" ]; then
+		echo "  Copying $qtframework..."
+		cp -R "$FWPATH" "$FRAMEWORKSDIR/"
+		# Sign the framework
+		codesign --force --sign - "$FRAMEWORKSDIR/$qtframework.framework" 2>/dev/null || true
+	fi
+done
+
 # Copy Python framework and fix it up.
 cp -R $PYTHONFRAMEWORKDIR $FRAMEWORKSDIR
 chmod 644 $PYDIR/lib/libpython*.dylib
