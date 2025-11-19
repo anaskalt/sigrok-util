@@ -34,24 +34,62 @@ fi
 # The path where to download files to and where to build packages.
 BUILDDIR=./build_app_$APPNAME_BINARY
 
-# We use Qt 5.5 in order to remain compatible with more versions of Mac OS X.
-QTVER=qt@5.5
+# We use Qt 6 for Apple Silicon compatibility and modern macOS support.
+QTVER=qt@6
 
 # Path to Qt5 binaries.
 QTBINDIR=`brew list $QTVER | grep bin | head -n 1 | xargs dirname`
 QTTRANSLATIONSDIR=`brew --prefix $QTVER`/translations
 
 # Path to boost libraries.
-BOOSTLIBDIR=`brew list boost | grep libboost_system | grep -v cmake | head -n 1 | xargs dirname`
+BOOSTLIBDIR=`brew --prefix boost`/lib
 
-# Path to Python 3 framework.
-PYTHONFRAMEWORKDIR=`brew list python3 | grep libpython | head -n 1 | xargs dirname`/../../../..
+# Detect Python 3 Homebrew formula first
+PYTHON_FORMULA=$(brew list --formula 2>/dev/null | grep -E '^python@3\.[0-9]+$' | head -1)
+if [ -z "$PYTHON_FORMULA" ]; then
+	PYTHON_FORMULA="python3"
+fi
+echo "Using Homebrew Python formula: $PYTHON_FORMULA"
 
-PYVER="3.7"
+# Path to Python 3 framework - try multiple locations
+PYTHON_PREFIX=`brew --prefix $PYTHON_FORMULA 2>/dev/null`
+if [ -d "$PYTHON_PREFIX/Frameworks/Python.framework" ]; then
+	PYTHONFRAMEWORKDIR="$PYTHON_PREFIX/Frameworks/Python.framework"
+elif [ -d "/Library/Frameworks/Python.framework" ]; then
+	PYTHONFRAMEWORKDIR="/Library/Frameworks/Python.framework"
+else
+	echo "ERROR: Could not find Python.framework"
+	echo "Tried: $PYTHON_PREFIX/Frameworks/Python.framework"
+	echo "Tried: /Library/Frameworks/Python.framework"
+	exit 1
+fi
+
+# Detect actual Python version from the framework directory
+if [ -d "$PYTHONFRAMEWORKDIR/Versions" ]; then
+	PYVER=$(ls -1 "$PYTHONFRAMEWORKDIR/Versions" | grep -E '^[0-9]+\.[0-9]+$' | sort -V | tail -1)
+fi
+if [ -z "$PYVER" ]; then
+	# Fallback: detect from python3 command
+	PYVER=$(python3 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+fi
+if [ -z "$PYVER" ]; then
+	echo "ERROR: Could not detect Python 3 version"
+	exit 1
+fi
+echo "Using Python framework version: $PYVER"
 
 # You usually don't need to change anything below this line.
 
 # -----------------------------------------------------------------------------
+
+echo "=== DMG Build Configuration ==="
+echo "Qt version: $QTVER"
+echo "Qt bin dir: $QTBINDIR"
+echo "Python version: $PYVER"
+echo "Python framework: $PYTHONFRAMEWORKDIR"
+echo "Boost lib dir: $BOOSTLIBDIR"
+echo "==============================="
+echo ""
 
 # Remove build directory contents (if any) and create a new build dir.
 rm -rf $BUILDDIR
@@ -77,17 +115,40 @@ cp -R $PREFIX/share/sigrok-firmware $SHARE_DIR
 
 if [ "x$APPNAME_BINARY" = "xpulseview" ]; then
 	# Manually copy some boost libs that "macdeployqt" won't copy.
-	cp $BOOSTLIBDIR/libboost_timer-mt.dylib $FRAMEWORKSDIR
-	cp $BOOSTLIBDIR/libboost_chrono-mt.dylib $FRAMEWORKSDIR
+	# Try with -mt suffix first (older Homebrew), then without (newer Homebrew)
+	if [ -f $BOOSTLIBDIR/libboost_timer-mt.dylib ]; then
+		cp $BOOSTLIBDIR/libboost_timer-mt.dylib $FRAMEWORKSDIR
+		cp $BOOSTLIBDIR/libboost_chrono-mt.dylib $FRAMEWORKSDIR
+	else
+		cp $BOOSTLIBDIR/libboost_timer.dylib $FRAMEWORKSDIR
+		cp $BOOSTLIBDIR/libboost_chrono.dylib $FRAMEWORKSDIR
+	fi
 	chmod 644 $FRAMEWORKSDIR/*boost*
 
 	# Manually copy translations ("macdeployqt" won't copy them).
 	mkdir -p $CONTENTSDIR/translations
-	cp $QTTRANSLATIONSDIR/qt_*.qm $CONTENTSDIR/translations
-	cp $QTTRANSLATIONSDIR/qtbase_*.qm $CONTENTSDIR/translations
+	cp $QTTRANSLATIONSDIR/qt_*.qm $CONTENTSDIR/translations 2>/dev/null || true
+	cp $QTTRANSLATIONSDIR/qtbase_*.qm $CONTENTSDIR/translations 2>/dev/null || true
 fi
 
-$QTBINDIR/macdeployqt $APPNAME.app
+# Set library path for macdeployqt to find Qt frameworks
+QTLIBDIR=`brew --prefix $QTVER`/lib
+echo "Qt lib dir: $QTLIBDIR"
+echo "Running macdeployqt..."
+$QTBINDIR/macdeployqt $APPNAME.app -verbose=2 -libpath="$QTLIBDIR"
+
+# Copy missing Qt frameworks that macdeployqt doesn't automatically include
+echo "Copying additional Qt frameworks..."
+for qtframework in QtDBus; do
+	FWPATH="$QTLIBDIR/$qtframework.framework"
+	if [ -d "$FWPATH" ]; then
+		echo "  Copying $qtframework..."
+		# Use -L to follow symlinks and copy actual files
+		cp -R -L "$FWPATH" "$FRAMEWORKSDIR/"
+		# Sign the framework
+		codesign --force --sign - "$FRAMEWORKSDIR/$qtframework.framework" 2>/dev/null || true
+	fi
+done
 
 # Copy Python framework and fix it up.
 cp -R $PYTHONFRAMEWORKDIR $FRAMEWORKSDIR
@@ -109,22 +170,107 @@ rm -rf $PYDIR/lib/python$PYVER/__pycache__
 rm -rf $PYDIR/lib/python$PYVER/**/__pycache__
 rm -rf $PYDIR/lib/python$PYVER/**/**/__pycache__
 rm -rf $PYDIR/Resources
-install_name_tool -change \
-	/usr/local/opt/python/Frameworks/Python.framework/Versions/$PYVER/Python \
-	@executable_path/../Frameworks/Python.framework/Versions/$PYVER/Python \
-	$FRAMEWORKSDIR/libsigrokdecode.*.dylib
-install_name_tool -change \
-	/usr/local/opt/python/Frameworks/Python.framework/Versions/$PYVER/Python \
-	@executable_path/../Frameworks/Python.framework/Versions/$PYVER/Python \
-	$PREFIX/lib/libirmp.*.dylib
+
+# Fix Python framework references in libraries
+# Detect the actual Python framework path used during build
+PYTHON_FRAMEWORK_BUILD_PATH="$PYTHON_PREFIX/Frameworks/Python.framework/Versions/$PYVER/Python"
+if [ ! -f "$PYTHON_FRAMEWORK_BUILD_PATH" ]; then
+	# Try alternate location
+	PYTHON_FRAMEWORK_BUILD_PATH="/Library/Frameworks/Python.framework/Versions/$PYVER/Python"
+fi
+
+echo "Fixing Python framework references..."
+for lib in $FRAMEWORKSDIR/libsigrokdecode.*.dylib $PREFIX/lib/libirmp.*.dylib; do
+	if [ -f "$lib" ]; then
+		install_name_tool -change \
+			"$PYTHON_FRAMEWORK_BUILD_PATH" \
+			@executable_path/../Frameworks/Python.framework/Versions/$PYVER/Python \
+			"$lib" 2>/dev/null || true
+		# Also try the old hardcoded path for compatibility
+		install_name_tool -change \
+			/usr/local/opt/python/Frameworks/Python.framework/Versions/$PYVER/Python \
+			@executable_path/../Frameworks/Python.framework/Versions/$PYVER/Python \
+			"$lib" 2>/dev/null || true
+	fi
+done
 
 # Add wrapper (sets PYTHONHOME/SIGROK_FIRMWARE_DIR/SIGROKDECODE_DIR).
 mv $MACOSDIR/$APPNAME_BINARY $MACOSDIR/$APPNAME_BINARY.real
-cp ../contrib/$APPNAME_BINARY $MACOSDIR
+# Create wrapper script dynamically with detected Python version
+cat > $MACOSDIR/$APPNAME_BINARY << EOF
+#!/bin/sh
+##
+## This file is part of the sigrok-util project.
+##
+## Copyright (C) 2017-2020 Uwe Hermann <uwe@hermann-uwe.de>
+##
+## This program is free software; you can redistribute it and/or modify
+## it under the terms of the GNU General Public License as published by
+## the Free Software Foundation; either version 2 of the License, or
+## (at your option) any later version.
+##
+## This program is distributed in the hope that it will be useful,
+## but WITHOUT ANY WARRANTY; without even the implied warranty of
+## MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+## GNU General Public License for more details.
+##
+## You should have received a copy of the GNU General Public License
+## along with this program; if not, see <http://www.gnu.org/licenses/>.
+##
+
+DIR="\$(dirname "\$0")"
+cd "\$DIR"
+export DYLD_LIBRARY_PATH="../Frameworks"
+export PYTHONHOME="../Frameworks/Python.framework/Versions/$PYVER"
+export SIGROK_FIRMWARE_DIR="../share/sigrok-firmware"
+export SIGROKDECODE_DIR="../share/libsigrokdecode/decoders"
+exec ./$APPNAME_BINARY.real "\$@"
+EOF
 chmod 755 $MACOSDIR/$APPNAME_BINARY
 
 cp ../contrib/Info.plist_$APPNAME_BINARY $CONTENTSDIR/Info.plist
 cp ../contrib/$APPNAME_BINARY.icns $CONTENTSDIR/Resources
+
+# Code sign the application bundle (required for Apple Silicon)
+echo "Code signing the application..."
+
+# Remove all extended attributes first
+echo "Removing extended attributes..."
+xattr -cr "$APPNAME.app" 2>/dev/null || true
+
+# Sign Python framework files individually (don't sign the framework bundle itself)
+if [ -d "$FRAMEWORKSDIR/Python.framework" ]; then
+	echo "Signing Python framework binaries..."
+	# Sign the main Python binary/library
+	find "$FRAMEWORKSDIR/Python.framework" -type f \( -name "Python" -o -name "*.dylib" -o -name "*.so" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
+fi
+
+# Sign all .dylib files in Frameworks
+echo "Signing libraries..."
+find "$FRAMEWORKSDIR" -name "*.dylib" -type f -exec codesign --force --sign - {} \; 2>/dev/null || true
+
+# Sign Qt and other frameworks (but not Python.framework)
+echo "Signing Qt frameworks..."
+for framework in "$FRAMEWORKSDIR"/*.framework; do
+	if [ -d "$framework" ] && [ "$(basename "$framework")" != "Python.framework" ]; then
+		codesign --force --sign - "$framework" 2>/dev/null || true
+	fi
+done
+
+# Sign plugins
+echo "Signing plugins..."
+find "$CONTENTSDIR/PlugIns" -type f \( -name "*.dylib" -o -perm +111 \) -exec codesign --force --sign - {} \; 2>/dev/null || true
+
+# Sign the main binary
+echo "Signing main executable..."
+codesign --force --sign - "$MACOSDIR/$APPNAME_BINARY.real" 2>/dev/null || true
+
+# Finally sign the app bundle (without --deep since we signed components individually)
+echo "Signing app bundle..."
+codesign --force --sign - "$APPNAME.app" 2>/dev/null || true
+
+echo "Code signing complete."
+echo "Note: Some signature warnings are normal and can be ignored."
 
 hdiutil create "${APPNAME}-${APPVER}.dmg" -volname "$APPNAME $APPVER" \
 	-fs HFS+ -srcfolder "$APPNAME.app"
