@@ -143,7 +143,8 @@ for qtframework in QtDBus; do
 	FWPATH="$QTLIBDIR/$qtframework.framework"
 	if [ -d "$FWPATH" ]; then
 		echo "  Copying $qtframework..."
-		cp -R "$FWPATH" "$FRAMEWORKSDIR/"
+		# Use -L to follow symlinks and copy actual files
+		cp -R -L "$FWPATH" "$FRAMEWORKSDIR/"
 		# Sign the framework
 		codesign --force --sign - "$FRAMEWORKSDIR/$qtframework.framework" 2>/dev/null || true
 	fi
