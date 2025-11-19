@@ -34,20 +34,20 @@ fi
 # The path where to download files to and where to build packages.
 BUILDDIR=./build_app_$APPNAME_BINARY
 
-# We use Qt 5.5 in order to remain compatible with more versions of Mac OS X.
-QTVER=qt@5.5
+# We use Qt 6 for Apple Silicon support.
+QTVER=qt@6
 
 # Path to Qt5 binaries.
 QTBINDIR=`brew list $QTVER | grep bin | head -n 1 | xargs dirname`
 QTTRANSLATIONSDIR=`brew --prefix $QTVER`/translations
 
 # Path to boost libraries.
-BOOSTLIBDIR=`brew list boost | grep libboost_system | grep -v cmake | head -n 1 | xargs dirname`
+BOOSTLIBDIR=`brew --prefix boost`/lib
 
 # Path to Python 3 framework.
-PYTHONFRAMEWORKDIR=`brew list python3 | grep libpython | head -n 1 | xargs dirname`/../../../..
+PYTHONFRAMEWORKDIR=`brew --prefix python@3.12`/Frameworks/Python.framework
 
-PYVER="3.7"
+PYVER="3.12"
 
 # You usually don't need to change anything below this line.
 
@@ -77,17 +77,29 @@ cp -R $PREFIX/share/sigrok-firmware $SHARE_DIR
 
 if [ "x$APPNAME_BINARY" = "xpulseview" ]; then
 	# Manually copy some boost libs that "macdeployqt" won't copy.
-	cp $BOOSTLIBDIR/libboost_timer-mt.dylib $FRAMEWORKSDIR
-	cp $BOOSTLIBDIR/libboost_chrono-mt.dylib $FRAMEWORKSDIR
+	# Try with -mt suffix first, fallback to without.
+	if [ -f $BOOSTLIBDIR/libboost_timer-mt.dylib ]; then
+		cp $BOOSTLIBDIR/libboost_timer-mt.dylib $FRAMEWORKSDIR
+		cp $BOOSTLIBDIR/libboost_chrono-mt.dylib $FRAMEWORKSDIR
+	else
+		cp $BOOSTLIBDIR/libboost_timer.dylib $FRAMEWORKSDIR
+		cp $BOOSTLIBDIR/libboost_chrono.dylib $FRAMEWORKSDIR
+	fi
 	chmod 644 $FRAMEWORKSDIR/*boost*
 
 	# Manually copy translations ("macdeployqt" won't copy them).
 	mkdir -p $CONTENTSDIR/translations
-	cp $QTTRANSLATIONSDIR/qt_*.qm $CONTENTSDIR/translations
-	cp $QTTRANSLATIONSDIR/qtbase_*.qm $CONTENTSDIR/translations
+	cp $QTTRANSLATIONSDIR/qt_*.qm $CONTENTSDIR/translations 2>/dev/null || true
+	cp $QTTRANSLATIONSDIR/qtbase_*.qm $CONTENTSDIR/translations 2>/dev/null || true
 fi
 
-$QTBINDIR/macdeployqt $APPNAME.app
+QTLIBDIR=`brew --prefix $QTVER`/lib
+$QTBINDIR/macdeployqt $APPNAME.app -libpath="$QTLIBDIR"
+
+# Copy QtDBus framework (required but not copied by macdeployqt).
+if [ -d "$QTLIBDIR/QtDBus.framework" ]; then
+	cp -R -L "$QTLIBDIR/QtDBus.framework" $FRAMEWORKSDIR/
+fi
 
 # Copy Python framework and fix it up.
 cp -R $PYTHONFRAMEWORKDIR $FRAMEWORKSDIR
@@ -120,11 +132,27 @@ install_name_tool -change \
 
 # Add wrapper (sets PYTHONHOME/SIGROK_FIRMWARE_DIR/SIGROKDECODE_DIR).
 mv $MACOSDIR/$APPNAME_BINARY $MACOSDIR/$APPNAME_BINARY.real
-cp ../contrib/$APPNAME_BINARY $MACOSDIR
+cat > $MACOSDIR/$APPNAME_BINARY << EOF
+#!/bin/sh
+DIR="\$(dirname "\$0")"
+cd "\$DIR"
+export DYLD_LIBRARY_PATH="../Frameworks"
+export PYTHONHOME="../Frameworks/Python.framework/Versions/$PYVER"
+export SIGROK_FIRMWARE_DIR="../share/sigrok-firmware"
+export SIGROKDECODE_DIR="../share/libsigrokdecode/decoders"
+exec ./$APPNAME_BINARY.real "\$@"
+EOF
 chmod 755 $MACOSDIR/$APPNAME_BINARY
 
 cp ../contrib/Info.plist_$APPNAME_BINARY $CONTENTSDIR/Info.plist
 cp ../contrib/$APPNAME_BINARY.icns $CONTENTSDIR/Resources
+
+# Code sign for Apple Silicon compatibility.
+find $FRAMEWORKSDIR/Python.framework -type f \( -name "*.dylib" -o -name "*.so" -o -name "Python" \) -exec codesign --force --sign - {} \; 2>/dev/null || true
+find $FRAMEWORKSDIR -name "*.dylib" -exec codesign --force --sign - {} \; 2>/dev/null || true
+find $FRAMEWORKSDIR -name "*.framework" -exec codesign --force --sign - {} \; 2>/dev/null || true
+codesign --force --sign - $MACOSDIR/$APPNAME_BINARY.real 2>/dev/null || true
+codesign --force --sign - $APPNAME.app 2>/dev/null || true
 
 hdiutil create "${APPNAME}-${APPVER}.dmg" -volname "$APPNAME $APPVER" \
 	-fs HFS+ -srcfolder "$APPNAME.app"
